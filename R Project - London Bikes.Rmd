@@ -1,0 +1,285 @@
+CST4070 - Applied Data Analytics - Tools, Practical Big Data Handling, Cloud Distribution
+Summative assessment − Component 2
+Individual report - Dragomir Nedev M00724882
+
+##Problem deffinition
+Three datasets are available: bike_journeys, bike_stations and LondonCensus.
+Spatial granilarity: each bike station.
+Temporal granularity: one hour time slot.
+Goal: predicting the total number of bikes rented in each bike station with the temporal granularity of one hour time slot.
+
+##Preprocecssing
+Importing the datasets
+```{r}
+library(data.table)
+bike_journeys = fread('bike_journeys.csv')
+bike_stations = fread('bike_stations.csv')
+census = fread('London_census.csv')
+```
+Exploring the datasets
+```{r}
+head(bike_journeys)
+```
+
+```{r}
+head(bike_stations)
+```
+
+```{r}
+head(census)
+```
+
+Importing libraries which will check and plot heatmap of missing values
+```{r}
+library(Rcpp)
+library(Amelia)
+```
+
+```{r}
+missmap(bike_journeys)
+```
+
+```{r}
+missmap(bike_stations)
+```
+
+```{r}
+missmap(census)
+```
+No missing data, in the datasets, means there would not be NaN values.
+
+
+Checking consistency between bike_journeys and bike_stations.
+We have to join this datasets based on Start_Station_ID and StationID so we need to check whether they contain the same values.
+```{r}
+length(unique(bike_journeys$Start_Station_ID))
+```
+
+```{r}
+length(unique(bike_journeys$End_Station_ID))
+```
+
+```{r}
+length(unique(bike_stations$Station_ID))
+```
+
+```{r}
+length(unique(intersect(bike_stations$Station_ID, bike_journeys$Start_Station_ID)))
+```
+
+Bike_journeys dataset contains 779 unique stations (the same number for end stations and start stations).
+Bike_stations dataset contains 773 unique stations.
+Both datasets have 771 matching unique stations which means that we will exclude data for 8 stations. 
+
+##Hypotheses
+
+H1. Bikes demand is higher durin peak hours.
+H2. Bikes demand have a daily trend.
+H3. Higher demand of bikes rented at stations which are close to central London.
+H4. Higher demand of bikes rented where is high employment rate.
+H5. Higher demand of bikes rented where is high population density.
+H6. Higher demand of bikes rented where is high percentage of green space.
+H7. Higher demand of bikes rented in deprived areas.
+H8. Higher demand of bikes rented in poor areas.
+H9. Higher demand of bikes rented where is high immigration rate.
+H10. Higher demand of bikes rented where is high flats rate.
+H11. Higher demand of bikes rented where is low number of owned properties rate.
+
+##Metrics
+
+- bike_rides. Number of rides would be our depandant variable that we need to predict
+- Start_hour. Indicate the hour when the journey started. Linked to H1.
+- Start_Day. Indicate the day when the journey started. Linked to H2.
+- finalRatioEmployee. Ratio of people who are employed. NoEmployee over PopDen times AreaSqKm. Linked to H4.
+- PopDen. Population divided by the ward area. Linked to H5.
+- GrenSpace. Percentage of green space associated with the ward. Linked to H6.
+- LivingEnSc. Quality of the local environment. The more deprived is an area, the higher the score. Linked to H7.
+- IncomeScor. Proportion of the population experiencing deprivation relating to low income. Higher score means lower income and poorer areas. Linked to H8.
+- MedHPrice. Median house price. The lower median means the poorer areas. Linked to H8.
+- RatioCTFtoH. Ratio of properties in council tax band F-H (the highest median house price). The lower score means the poorer areas. Linked H8.
+- RatioBornUK. Ratio of people who were born in the UK. It is defined as NotBornUK over BornUK plus NotBornUK. Linked to H9.
+- FlatsRate. Ratio of flats. It is defined as NoFlats over NoHouses. Linked to H10.
+- RatioOwndDwel. Ratio of owned properties in each ward. It is defined as NoOwndDwel over NoDwelling. Linked to H11.
+
+##Data processing
+
+Due to the fact that the cencus data holds the record of longitute and latitude of the ward and the bike_station dataset, contains the coordinates of the bike stations, we need to calculate the nearest distance.Importing library "geosphere" will help us calculate the distance between the locations from the two datasets
+```{r}
+library(geosphere)
+```
+
+```{r}
+distance <- distm(bike_stations[, 4:3], census[, 6:7])
+```
+
+```{r}
+distance_calc <- cbind(bike_stations, census[apply(distance, 1, which.min),])
+View(distance_calc)
+```
+Renaming the column Start_Station_ID to match Station_ID, so we could berge the data
+```{r}
+colnames(bike_journeys)[colnames(bike_journeys) == "Start_Station_ID"] <- "Station_ID"
+```
+After we are done the the transformations of the location we can merge the datasets
+```{r}
+total <- merge(bike_journeys,distance_calc,by = "Station_ID")
+```
+
+```{r}
+library(dplyr)
+```
+
+Combining the different data fields into one
+```{r}
+total$Journey_date <- as.Date(with(total, paste(Start_Year, Start_Month, Start_Date ,sep="-")), "%y-%m-%d")
+```
+
+```{r}
+total2 <- total %>% group_by(Start_Hour, Station_ID, Journey_date) %>% summarise(bike_rides = n())
+```
+
+```{r}
+View(total2)
+```
+
+```{r}
+total2 <- left_join(total, total2, by=c("Station_ID","Start_Hour", "Journey_date")) %>% rowwise()
+```
+The data frame needs to be transformed into a datatable, before extracting the final dataset
+```{r}
+setDT(total2)
+```
+The data needs to be transformed from the format:
+
+<Journey_Duration, Journey_ID, End_Date, End_Month, End_Year, End_Hour, End_Minute, End_Station_ID, Start_Date, Start_Month, Start_Year, Start_Hour, Start_Minute, Start_Station_ID>
+<Station_ID, Capacity, Latitude, Longitude, Station_Name>
+<WardCode, WardName, Borough, NESW, AreaSqKm, lon, lat, IncomeScor, LivingEnSc, NoEmployee, GrenSpace, PopDen, BornUK, NotBornUK, NoCTFtoH, NoDwelling, NoFlats, NoHouses, NoWndDwel, MedHPrice>
+
+Into the format:
+
+<bike_rides, Station_ID,Start_Date, Start_Hour, MedHPrice, finalRatioEmployee, IncomeScor, LivingEnSc, 
+                   GrenSpace, RatioBornUK, RatioCTFtoH, RatioOwndDwel, FlatsRate>
+```{r}
+final = total2[, .(bike_rides, Station_ID, Start_Date,
+                   Start_Hour,  MedHPrice,
+                   finalRatioEmployee=NoEmployee/(PopDen*AreaSqKm), IncomeScor, LivingEnSc, 
+                   GrenSpace, RatioBornUK=BornUK/(BornUK+NotBornUK), RatioCTFtoH=NoCTFtoH/(NoDwelling),
+                   RatioOwndDwel=NoOwndDwel/NoDwelling, FlatsRate=NoFlats/(NoFlats+NoHouses))]
+str(final)
+```
+
+Summerising the information from the final dataset
+```{r}
+summary(final)
+```
+
+In a few of the vairables it could be seen that they are not normally distributed, which indicates that they have to be transformed in to log value.
+```{r}
+final$bike_rides = log10(final$bike_rides + min(final[bike_rides!=0]$bike_rides))
+final$RatioBornUK = log10(final$RatioBornUK + min(final[RatioBornUK!=0]$RatioBornUK))
+final$RatioCTFtoH = log10(final$RatioCTFtoH + min(final[RatioCTFtoH!=0]$RatioCTFtoH))
+```
+Standardising the data
+```{r}
+mydata_std = as.data.table(scale(final) )
+summary(mydata_std)
+```
+
+Checking for multicollinearity.
+```{r}
+library(corrplot)
+corrplot(cor(mydata_std))
+```
+
+There is high correlation between RatioCTFtoH, RatioOwndDwel and IncomeScor so they will be romoved from the model.
+Again checking multicollinearity.
+```{r}
+mydata_std$RatioCTFtoH = NULL
+mydata_std$RatioOwndDwel = NULL
+mydata_std$IncomeScor = NULL
+corrplot(cor(mydata_std))
+```
+
+
+##Algorithms
+Linear regression model needs to implemented as part of the final goal
+```{r}
+set.seed(0)
+trainIdx = sample(1:nrow(mydata_std), 0.75*nrow(mydata_std))
+train = mydata_std[trainIdx]
+test = mydata_std[-trainIdx]
+lr = lm(bike_rides ~ ., data=train)
+train_preds = predict(lr, train)
+test_preds = predict(lr, test)
+```
+Printing the R2 scores
+```{r}
+print(paste("R2 on train:", cor(train_preds, train$bike_rides)^2))
+print(paste("R2 on test:", cor(test_preds, test$bike_rides)^2))
+```
+
+##Data undestanding
+Plotting the beta coefficients ot understand the model.
+```{r}
+lr = lm(bike_rides ~ ., data=mydata_std)
+summary(lr)
+```
+
+```{r}
+library(ggplot2)
+ggplot(, aes(x = names(lr$coefficients), y=lr$coefficients)) +
+  geom_bar(stat="identity") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  xlab("coefficient") +
+  ylab("normalised value")
+```
+
+Checking the multicollinearity of the data
+```{r}
+corrplot(cor(mydata_std))
+```
+
+Plotting histograms to prove H1 and H2
+```{r}
+peak_hours <- total2$Start_Hour
+hist(peak_hours, breaks = 24, main = "24 hours split")
+```
+
+
+```{r}
+peak_days <- total2$Start_Date
+hist(peak_days, breaks = 31, main = "31 days split")
+```
+
+
+```{r}
+```
+
+##Main findings
+H1. Bikes demand is higher durin peak hours. TRUE. As seen from vis 24 hour split, where we can see there are clear high deman during peak hours (07-09:00 and 16-18:00), which prooves our hypothesis.
+
+H2. Bikes demand have a daily trend. TRUE. As seen in vis 31 days split, there is higher demand in the first half of the month, than the second half.
+
+H3. Higher demand of bikes rented at stations which are close to central London. Cannot be falsified due to the the fact that the data needs to be standardised and the values for the locations is not numeric
+
+H4. Higher demand of bikes rented where is high employment rate. TRUE.
+
+H5. Higher demand of bikes rented where is high population density. Cannot be falsified due to multicollinearity.
+
+H6. Higher demand of bikes rented where is high percentage of green space. TRUE. We can see that the bike_rides are fairly high correlated to the zones with high concentration of green spaces.
+
+H7. Higher demand of bikes rented in deprived areas. FALSE
+
+H8. Higher demand of bikes rented in poor areas. TRUE. Lower demand in wealthier zones.
+
+H9. Higher demand of bikes rented where is high immigration rate. TRUE. We can see that the bike_rides are fairly high correlated to the zones where there are people who are predominantly born in UK
+
+H10. Higher demand of bikes rented where is high flats rate. FALSE.
+
+H11. Higher demand of bikes rented where is low number of owned properties rate. Cannot be falsified due to multicollinearity of OwndDwelRate
+
+##Limitaions
+
+1. The short period of time, reviewed in the dataset, does not allow us to do perfected model. More months would give us better predictions
+2. Multicollinearity of some of the features reduces the accuracy of the model
+3. Introducing weather data would further improve our model as we would be able to take external factors.
